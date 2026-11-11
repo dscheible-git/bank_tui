@@ -1,0 +1,22 @@
+# Example configuration for bank_tui.
+#
+# The application reads its real configuration from
+#   ~/.config/bank_tui/config.toml
+# (or $XDG_CONFIG_HOME/bank_tui/config.toml).
+#
+# Copy this file there and adjust it to your needs. The settings below are
+# only used as a fallback when no user configuration exists yet.
+
+# Directory containing the bank CSV exports.
+csv_dir = "."
+
+# Payees to ignore completely during import (case-insensitive substring match).
+ignore_payees = []
+
+# Keyword rules for automatic categorization (case-insensitive).
+# Each key is a category name; its values are matched against
+# payee, booking text and purpose.
+[categories]
+"Lebensmittel" = ["rewe", "edeka", "aldi", "lidl", "kaufland"]
+"Mobilität" = ["db vertrieb", "tanke", "shell", "aral"]
+"Wohnen" = ["stadtwerke", "vodafone", "telekom"]

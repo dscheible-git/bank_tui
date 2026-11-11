@@ -1,0 +1,19 @@
+Zeile 1
+Zeile 2
+Zeile 3
+Zeile 4
+Zeile 5
+Zeile 6
+Zeile 7
+Zeile 8
+Zeile 9
+Zeile 10
+Zeile 11
+Zeile 12
+Buchung;Wertstellungsdatum;Auftraggeber/Empfänger;Buchungstext;Verwendungszweck;Betrag;Währung
+17.10.2025;17.10.2025;REWE Markt;Kartenzahlung;Einkauf REWE;-32,23;EUR
+18.10.2025;18.10.2025;Stadtwerke;SEPA-Lastschrift;Strom 10/2025;-85,00;EUR
+19.10.2025;19.10.2025;Max Mustermann;Überweisung;Geschenk;-50,00;EUR
+20.10.2025;20.10.2025;Arbeitgeber;Gehalt;Gehalt 10/2025;2500,00;EUR
+15.11.2025;15.11.2025;Vermieter;Überweisung;Wohnungsmiete;-650,00;EUR
+02.12.2025;02.12.2025;ALDI Süd;Kartenzahlung;Einkauf ALDI;-45,10;EUR
