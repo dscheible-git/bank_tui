@@ -78,6 +78,10 @@ bank_tui
 - `j` / `k` or `Down` / `Up`: Navigate through transaction records
 - `Tab` / `Shift+Tab`: Switch tabs (e.g., Transactions, Categories, Analytics)
 - `/`: Open dynamic filter/search
+- `i` / `a`: Filter by minimum / maximum amount
+- `s` / `e`: Filter by start / end date (`DD.MM.YYYY`)
+- `f`: Filter the Buchungsliste by category (choose with `j`/`k`, confirm with `Enter`)
+- `c`: Reset all filters
 - `m`: Map the selected transaction to a category
   - Choose the matching source (`a` = payee, `v` = purpose)
   - Pick an existing category from the list (`j`/`k`, `Enter`) or press `n` to create a new one

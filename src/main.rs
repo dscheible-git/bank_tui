@@ -274,6 +274,7 @@ enum InputMode {
     FilterMaxAmount,
     FilterStartDate,
     FilterEndDate,
+    FilterCategorySelect,
     MappingSourceSelect,
     MappingCategorySelect,
     MappingCategoryName,
@@ -307,6 +308,8 @@ struct App {
     filter_max_amount: Option<f64>,
     filter_start_date: Option<NaiveDate>,
     filter_end_date: Option<NaiveDate>,
+    filter_category: Option<String>,
+    filter_category_state: ListState,
 
     // Interaktives Mapping
     mapping_source: Option<MappingSource>,
@@ -335,6 +338,8 @@ impl App {
             filter_max_amount: None,
             filter_start_date: None,
             filter_end_date: None,
+            filter_category: None,
+            filter_category_state: ListState::default(),
             mapping_source: None,
             mapping_category: String::new(),
             mapping_keyword: String::new(),
@@ -346,10 +351,11 @@ impl App {
         app
     }
 
-    fn apply_filters(&mut self) {
+    /// Applies the active filters to the Buchungsliste and returns the matching
+    /// transactions without mutating the app state.
+    fn filter_buchungsliste(&self) -> Vec<Transaction> {
         let search_lower = self.filter_search.to_lowercase();
-        self.filtered_transactions = self
-            .all_transactions
+        self.all_transactions
             .iter()
             .filter(|tx| {
                 if !search_lower.is_empty() {
@@ -358,6 +364,11 @@ impl App {
                     let matches_purpose = tx.purpose.to_lowercase().contains(&search_lower);
                     let matches_cat = tx.category.to_lowercase().contains(&search_lower);
                     if !(matches_payee || matches_text || matches_purpose || matches_cat) {
+                        return false;
+                    }
+                }
+                if let Some(category) = &self.filter_category {
+                    if &tx.category != category {
                         return false;
                     }
                 }
@@ -385,7 +396,11 @@ impl App {
                 true
             })
             .cloned()
-            .collect();
+            .collect()
+    }
+
+    fn apply_filters(&mut self) {
+        self.filtered_transactions = self.filter_buchungsliste();
 
         if self.filtered_transactions.is_empty() {
             self.table_state.select(None);
@@ -397,6 +412,58 @@ impl App {
                 self.table_state.select(Some(current));
             }
         }
+    }
+
+    fn category_filter_options(&self) -> Vec<String> {
+        let mut categories: BTreeSet<String> = self.config.categories.keys().cloned().collect();
+        categories.extend(self.all_transactions.iter().map(|tx| tx.category.clone()));
+        if let Some(current) = &self.filter_category {
+            categories.insert(current.clone());
+        }
+        categories.into_iter().collect()
+    }
+
+    fn start_category_filter(&mut self) {
+        let options = self.category_filter_options();
+        let selected = self
+            .filter_category
+            .as_ref()
+            .and_then(|current| options.iter().position(|c| c == current))
+            .map(|idx| idx + 1)
+            .unwrap_or(0);
+        self.filter_category_state = ListState::default();
+        self.filter_category_state.select(Some(selected));
+        self.input_mode = InputMode::FilterCategorySelect;
+    }
+
+    fn next_filter_category(&mut self) {
+        let len = self.category_filter_options().len() + 1; // + "Alle Kategorien"
+        let i = match self.filter_category_state.selected() {
+            Some(i) => (i + 1) % len,
+            None => 0,
+        };
+        self.filter_category_state.select(Some(i));
+    }
+
+    fn prev_filter_category(&mut self) {
+        let len = self.category_filter_options().len() + 1;
+        let i = match self.filter_category_state.selected() {
+            Some(i) => if i == 0 { len - 1 } else { i - 1 },
+            None => 0,
+        };
+        self.filter_category_state.select(Some(i));
+    }
+
+    fn select_filter_category(&mut self) {
+        let options = self.category_filter_options();
+        let selected = self.filter_category_state.selected().unwrap_or(0);
+        self.filter_category = if selected == 0 {
+            None
+        } else {
+            options.get(selected - 1).cloned()
+        };
+        self.input_mode = InputMode::Normal;
+        self.apply_filters();
     }
 
     fn next_tab(&mut self) {
@@ -612,6 +679,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         _ => {}
                     }
                 }
+                InputMode::FilterCategorySelect => {
+                    match key.code {
+                        KeyCode::Char('j') | KeyCode::Down => app.next_filter_category(),
+                        KeyCode::Char('k') | KeyCode::Up => app.prev_filter_category(),
+                        KeyCode::Enter => app.select_filter_category(),
+                        KeyCode::Esc => app.input_mode = InputMode::Normal,
+                        _ => {}
+                    }
+                }
                 InputMode::SearchText | InputMode::FilterMinAmount | InputMode::FilterMaxAmount | InputMode::FilterStartDate | InputMode::FilterEndDate => {
                     match key.code {
                         KeyCode::Enter => {
@@ -671,12 +747,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             app.input_mode = InputMode::FilterEndDate;
                             app.input_buffer = app.filter_end_date.map(|d| d.format("%d.%m.%Y").to_string()).unwrap_or_default();
                         }
+                        KeyCode::Char('f') => app.start_category_filter(),
                         KeyCode::Char('c') => {
                             app.filter_search.clear();
                             app.filter_min_amount = None;
                             app.filter_max_amount = None;
                             app.filter_start_date = None;
                             app.filter_end_date = None;
+                            app.filter_category = None;
                             app.apply_filters();
                         }
                         KeyCode::Char('m')
@@ -720,6 +798,7 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
     let max_str = app.filter_max_amount.map(|v| format!("{:.2}€", v)).unwrap_or("-".to_string());
     let start_str = app.filter_start_date.map(|d| d.format("%d.%m.%Y").to_string()).unwrap_or("-".to_string());
     let end_str = app.filter_end_date.map(|d| d.format("%d.%m.%Y").to_string()).unwrap_or("-".to_string());
+    let category_str = app.filter_category.clone().unwrap_or_else(|| "Alle".to_string());
 
     let filter_text = match app.input_mode {
         InputMode::SearchText => format!("SUCHE TEXT > {}_", app.input_buffer),
@@ -727,6 +806,7 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
         InputMode::FilterMaxAmount => format!("FILTER MAX BETRAG > {}_", app.input_buffer),
         InputMode::FilterStartDate => format!("FILTER START DATUM (DD.MM.YYYY) > {}_", app.input_buffer),
         InputMode::FilterEndDate => format!("FILTER END DATUM (DD.MM.YYYY) > {}_", app.input_buffer),
+        InputMode::FilterCategorySelect => "[FILTER] Kategorie wählen: j/k oder ↑/↓, Enter | [Esc] Abbrechen".to_string(),
         InputMode::MappingSourceSelect => "[MAPPING] Quelle wählen: [a] Auftraggeber/Empfänger | [v] Verwendungszweck | [Esc] Abbrechen".to_string(),
         InputMode::MappingCategorySelect => "[MAPPING] Kategorie wählen: j/k oder ↑/↓, Enter | [n] Neue Kategorie | [Esc] Abbrechen".to_string(),
         InputMode::MappingCategoryName => format!("[MAPPING] Neue Kategorie eingeben > {}_", app.input_buffer),
@@ -735,8 +815,8 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
             app.mapping_category, app.input_buffer
         ),
         InputMode::Normal => format!(
-            " [/]Suche: \"{}\" | [i]Min: {} | [a]Max: {} | [s]Start: {} | [e]Ende: {} | [c]Reset | [m]Kategorie Mappen",
-            app.filter_search, min_str, max_str, start_str, end_str
+            " [/]Suche: \"{}\" | [i]Min: {} | [a]Max: {} | [s]Start: {} | [e]Ende: {} | [f]Kategorie: {} | [c]Reset | [m]Kategorie Mappen",
+            app.filter_search, min_str, max_str, start_str, end_str, category_str
         ),
     };
 
@@ -755,6 +835,39 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
     if app.input_mode == InputMode::MappingCategorySelect {
         render_category_select_popup(f, app);
     }
+
+    if app.input_mode == InputMode::FilterCategorySelect {
+        render_filter_category_popup(f, app);
+    }
+}
+
+fn render_filter_category_popup(f: &mut ratatui::Frame, app: &mut App) {
+    let categories = app.category_filter_options();
+    let area = f.area();
+
+    let popup_width = area.width.saturating_sub(4).clamp(20, 64).min(area.width);
+    let item_count = categories.len() + 1; // + "Alle Kategorien"
+    let popup_height = (item_count as u16 + 2)
+        .min(area.height.saturating_sub(2))
+        .max(1);
+
+    let x = area.x + area.width.saturating_sub(popup_width) / 2;
+    let y = area.y + area.height.saturating_sub(popup_height) / 2;
+    let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+    let mut items: Vec<ListItem> = vec![
+        ListItem::new("Alle Kategorien")
+            .style(Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+    ];
+    items.extend(categories.iter().map(|c| ListItem::new(c.clone())));
+
+    let list = List::new(items)
+        .block(Block::default().borders(Borders::ALL).title(" Buchungsliste filtern | j/k Enter | Esc "))
+        .highlight_style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD))
+        .highlight_symbol("▶ ");
+
+    f.render_widget(Clear, popup_area);
+    f.render_stateful_widget(list, popup_area, &mut app.filter_category_state);
 }
 
 fn render_category_select_popup(f: &mut ratatui::Frame, app: &mut App) {
@@ -990,4 +1103,73 @@ fn render_annual_avg_tab(f: &mut ratatui::Frame, app: &App, area: Rect) {
         .block(Block::default().borders(Borders::ALL).title(" Ausgaben pro Jahr & Mtl. Durchschnitt pro Kategorie | Vertikal: j/k, Horizontal: h/l "));
 
     f.render_widget(table, area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tx(date: &str, payee: &str, category: &str, amount_cents: i64) -> Transaction {
+        Transaction {
+            buchung: date.to_string(),
+            wertstellung: date.to_string(),
+            payee: payee.to_string(),
+            text: String::new(),
+            purpose: String::new(),
+            amount_cents,
+            currency: "EUR".to_string(),
+            date: NaiveDate::parse_from_str(date, "%d.%m.%Y").unwrap(),
+            category: category.to_string(),
+        }
+    }
+
+    fn test_app() -> App {
+        App::new(
+            Config::default(),
+            vec![
+                tx("05.01.2025", "REWE Markt", "Lebensmittel", 3210),
+                tx("15.02.2025", "Shell Tankstelle", "Mobilität", 5000),
+                tx("20.03.2025", "REWE Markt", "Lebensmittel", 1250),
+            ],
+        )
+    }
+
+    #[test]
+    fn filter_buchungsliste_by_category() {
+        let mut app = test_app();
+        app.filter_category = Some("Lebensmittel".to_string());
+
+        let filtered = app.filter_buchungsliste();
+
+        assert_eq!(filtered.len(), 2);
+        assert!(filtered.iter().all(|t| t.category == "Lebensmittel"));
+    }
+
+    #[test]
+    fn filter_buchungsliste_combines_search_amount_and_date() {
+        let mut app = test_app();
+        app.filter_search = "rewe".to_string();
+        app.filter_min_amount = Some(20.0);
+        app.filter_start_date = Some(NaiveDate::from_ymd_opt(2025, 1, 1).unwrap());
+        app.filter_end_date = Some(NaiveDate::from_ymd_opt(2025, 2, 1).unwrap());
+
+        let filtered = app.filter_buchungsliste();
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].amount_cents, 3210);
+    }
+
+    #[test]
+    fn select_filter_category_updates_list() {
+        let mut app = test_app();
+
+        app.filter_category_state.select(Some(0)); // "Alle Kategorien"
+        app.select_filter_category();
+        assert_eq!(app.filtered_transactions.len(), 3);
+
+        app.filter_category_state.select(Some(1)); // "Lebensmittel"
+        app.select_filter_category();
+        assert_eq!(app.filter_category.as_deref(), Some("Lebensmittel"));
+        assert_eq!(app.filtered_transactions.len(), 2);
+    }
 }
