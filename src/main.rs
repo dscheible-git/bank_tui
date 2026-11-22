@@ -1380,7 +1380,9 @@ mod tests {
         assert_eq!(app.filter_category.as_deref(), Some("Lebensmittel"));
         assert_eq!(app.filtered_transactions.len(), 2);
     }
+}
 
+#[cfg(test)]
 mod table_tests {
     use super::with_pinned_first;
 
