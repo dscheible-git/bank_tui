@@ -1379,6 +1379,8 @@ mod tests {
         app.select_filter_category();
         assert_eq!(app.filter_category.as_deref(), Some("Lebensmittel"));
         assert_eq!(app.filtered_transactions.len(), 2);
+    }
+
 mod table_tests {
     use super::with_pinned_first;
 
