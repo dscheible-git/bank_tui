@@ -107,11 +107,7 @@ present in your CSV exports.
 - `j` / `k` or `Down` / `Up`: Navigate through transaction records
 - `h` / `l`: Scroll tables horizontally; the first column stays pinned in the category tables
 - `Tab` / `Shift+Tab`: Switch tabs (e.g., Transactions, Categories, Analytics)
-- `/`: Open dynamic filter/search
-- `i` / `a`: Filter by minimum / maximum amount
-- `s` / `e`: Filter by start / end date (`DD.MM.YYYY`)
-- `f`: Filter the Buchungsliste by category (choose with `j`/`k`, confirm with `Enter`)
-- `c`: Reset all filters
+- `f`: Open the filter popup with all filters and their current values — text search, min/max amount, start/end date, category, and reset (`j`/`k` to choose, `Enter` to edit/apply, `Esc` to close)
 - `r`: Regenerate the HTML/PDF report
 - `m`: Map the selected transaction to a category
   - Choose the matching source (`a` = payee, `v` = purpose)

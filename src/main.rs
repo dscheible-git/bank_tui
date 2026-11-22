@@ -290,9 +290,20 @@ fn load_transactions_from_folder<P: AsRef<Path>>(dir: P, config: &Config) -> Vec
     transactions
 }
 
+const FILTER_MENU_ITEMS: [&str; 7] = [
+    "Textsuche",
+    "Minimaler Betrag",
+    "Maximaler Betrag",
+    "Startdatum",
+    "Enddatum",
+    "Kategorie",
+    "Alle Filter zurücksetzen",
+];
+
 #[derive(PartialEq)]
 enum InputMode {
     Normal,
+    FilterMenu,
     SearchText,
     FilterMinAmount,
     FilterMaxAmount,
@@ -334,6 +345,7 @@ struct App {
     filter_end_date: Option<NaiveDate>,
     filter_category: Option<String>,
     filter_category_state: ListState,
+    filter_menu_state: ListState,
 
     // Interaktives Mapping
     mapping_source: Option<MappingSource>,
@@ -370,6 +382,7 @@ impl App {
             filter_end_date: None,
             filter_category: None,
             filter_category_state: ListState::default(),
+            filter_menu_state: ListState::default(),
             mapping_source: None,
             mapping_category: String::new(),
             mapping_keyword: String::new(),
@@ -448,6 +461,106 @@ impl App {
         }
     }
 
+    fn start_filter_menu(&mut self) {
+        self.filter_menu_state = ListState::default();
+        self.filter_menu_state.select(Some(0));
+        self.input_mode = InputMode::FilterMenu;
+    }
+
+    fn next_filter_menu_item(&mut self) {
+        let len = FILTER_MENU_ITEMS.len();
+        let i = match self.filter_menu_state.selected() {
+            Some(i) => (i + 1) % len,
+            None => 0,
+        };
+        self.filter_menu_state.select(Some(i));
+    }
+
+    fn prev_filter_menu_item(&mut self) {
+        let len = FILTER_MENU_ITEMS.len();
+        let i = match self.filter_menu_state.selected() {
+            Some(i) => if i == 0 { len - 1 } else { i - 1 },
+            None => 0,
+        };
+        self.filter_menu_state.select(Some(i));
+    }
+
+    fn select_filter_menu_item(&mut self) {
+        match self.filter_menu_state.selected().unwrap_or(0) {
+            0 => self.start_search(),
+            1 => self.start_min_amount_filter(),
+            2 => self.start_max_amount_filter(),
+            3 => self.start_start_date_filter(),
+            4 => self.start_end_date_filter(),
+            5 => self.start_category_filter(),
+            6 => self.reset_filters(),
+            _ => self.input_mode = InputMode::Normal,
+        }
+    }
+
+    fn start_search(&mut self) {
+        self.filter_menu_state.select(Some(0));
+        self.input_mode = InputMode::SearchText;
+        self.input_buffer = self.filter_search.clone();
+    }
+
+    fn start_min_amount_filter(&mut self) {
+        self.filter_menu_state.select(Some(1));
+        self.input_mode = InputMode::FilterMinAmount;
+        self.input_buffer = self.filter_min_amount.map(|v| v.to_string()).unwrap_or_default();
+    }
+
+    fn start_max_amount_filter(&mut self) {
+        self.filter_menu_state.select(Some(2));
+        self.input_mode = InputMode::FilterMaxAmount;
+        self.input_buffer = self.filter_max_amount.map(|v| v.to_string()).unwrap_or_default();
+    }
+
+    fn start_start_date_filter(&mut self) {
+        self.filter_menu_state.select(Some(3));
+        self.input_mode = InputMode::FilterStartDate;
+        self.input_buffer = self.filter_start_date.map(|d| d.format("%d.%m.%Y").to_string()).unwrap_or_default();
+    }
+
+    fn start_end_date_filter(&mut self) {
+        self.filter_menu_state.select(Some(4));
+        self.input_mode = InputMode::FilterEndDate;
+        self.input_buffer = self.filter_end_date.map(|d| d.format("%d.%m.%Y").to_string()).unwrap_or_default();
+    }
+
+    fn filter_menu_values(&self) -> [String; 6] {
+        [
+            if self.filter_search.is_empty() {
+                "-".to_string()
+            } else {
+                format!("\"{}\"", self.filter_search)
+            },
+            self.filter_min_amount
+                .map(|v| format!("{:.2} €", v))
+                .unwrap_or_else(|| "-".to_string()),
+            self.filter_max_amount
+                .map(|v| format!("{:.2} €", v))
+                .unwrap_or_else(|| "-".to_string()),
+            self.filter_start_date
+                .map(|d| d.format("%d.%m.%Y").to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            self.filter_end_date
+                .map(|d| d.format("%d.%m.%Y").to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            self.filter_category.clone().unwrap_or_else(|| "Alle".to_string()),
+        ]
+    }
+
+    fn reset_filters(&mut self) {
+        self.filter_search.clear();
+        self.filter_min_amount = None;
+        self.filter_max_amount = None;
+        self.filter_start_date = None;
+        self.filter_end_date = None;
+        self.filter_category = None;
+        self.apply_filters();
+    }
+
     fn category_filter_options(&self) -> Vec<String> {
         let mut categories: BTreeSet<String> = self.config.categories.keys().cloned().collect();
         categories.extend(self.all_transactions.iter().map(|tx| tx.category.clone()));
@@ -467,6 +580,7 @@ impl App {
             .unwrap_or(0);
         self.filter_category_state = ListState::default();
         self.filter_category_state.select(Some(selected));
+        self.filter_menu_state.select(Some(5));
         self.input_mode = InputMode::FilterCategorySelect;
     }
 
@@ -496,7 +610,7 @@ impl App {
         } else {
             options.get(selected - 1).cloned()
         };
-        self.input_mode = InputMode::Normal;
+        self.input_mode = InputMode::FilterMenu;
         self.apply_filters();
     }
 
@@ -869,12 +983,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         _ => {}
                     }
                 }
+                InputMode::FilterMenu => {
+                    match key.code {
+                        KeyCode::Char('j') | KeyCode::Down => app.next_filter_menu_item(),
+                        KeyCode::Char('k') | KeyCode::Up => app.prev_filter_menu_item(),
+                        KeyCode::Enter => app.select_filter_menu_item(),
+                        KeyCode::Esc => app.input_mode = InputMode::Normal,
+                        _ => {}
+                    }
+                }
                 InputMode::FilterCategorySelect => {
                     match key.code {
                         KeyCode::Char('j') | KeyCode::Down => app.next_filter_category(),
                         KeyCode::Char('k') | KeyCode::Up => app.prev_filter_category(),
                         KeyCode::Enter => app.select_filter_category(),
-                        KeyCode::Esc => app.input_mode = InputMode::Normal,
+                        KeyCode::Esc => app.input_mode = InputMode::FilterMenu,
                         _ => {}
                     }
                 }
@@ -895,11 +1018,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 _ => {}
                             }
                             app.apply_filters();
-                            app.input_mode = InputMode::Normal;
+                            app.input_mode = InputMode::FilterMenu;
                         }
                         KeyCode::Esc => {
                             app.input_buffer.clear();
-                            app.input_mode = InputMode::Normal;
+                            app.input_mode = InputMode::FilterMenu;
                         }
                         KeyCode::Backspace => { app.input_buffer.pop(); }
                         KeyCode::Char(c) => { app.input_buffer.push(c); }
@@ -917,36 +1040,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         KeyCode::Left => app.prev_tab(),
                         KeyCode::Char(']') => app.next_tab(),
                         KeyCode::Char('[') => app.prev_tab(),
-                        KeyCode::Char('/') => {
-                            app.input_mode = InputMode::SearchText;
-                            app.input_buffer = app.filter_search.clone();
-                        }
-                        KeyCode::Char('i') => {
-                            app.input_mode = InputMode::FilterMinAmount;
-                            app.input_buffer = app.filter_min_amount.map(|v| v.to_string()).unwrap_or_default();
-                        }
-                        KeyCode::Char('a') => {
-                            app.input_mode = InputMode::FilterMaxAmount;
-                            app.input_buffer = app.filter_max_amount.map(|v| v.to_string()).unwrap_or_default();
-                        }
-                        KeyCode::Char('s') => {
-                            app.input_mode = InputMode::FilterStartDate;
-                            app.input_buffer = app.filter_start_date.map(|d| d.format("%d.%m.%Y").to_string()).unwrap_or_default();
-                        }
-                        KeyCode::Char('e') => {
-                            app.input_mode = InputMode::FilterEndDate;
-                            app.input_buffer = app.filter_end_date.map(|d| d.format("%d.%m.%Y").to_string()).unwrap_or_default();
-                        }
-                        KeyCode::Char('f') => app.start_category_filter(),
-                        KeyCode::Char('c') => {
-                            app.filter_search.clear();
-                            app.filter_min_amount = None;
-                            app.filter_max_amount = None;
-                            app.filter_start_date = None;
-                            app.filter_end_date = None;
-                            app.filter_category = None;
-                            app.apply_filters();
-                        }
+                        KeyCode::Char('f') | KeyCode::Char('F') => app.start_filter_menu(),
                         KeyCode::Char('r') => app.refresh_report(),
                         KeyCode::Char('m')
                             if app.tab_index == 0 && !app.filtered_transactions.is_empty() =>
@@ -997,6 +1091,7 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
         InputMode::FilterMaxAmount => format!("FILTER MAX BETRAG > {}_", app.input_buffer),
         InputMode::FilterStartDate => format!("FILTER START DATUM (DD.MM.YYYY) > {}_", app.input_buffer),
         InputMode::FilterEndDate => format!("FILTER END DATUM (DD.MM.YYYY) > {}_", app.input_buffer),
+        InputMode::FilterMenu => "[FILTER] Filter wählen: j/k oder ↑/↓, Enter | [Esc] Abbrechen".to_string(),
         InputMode::FilterCategorySelect => "[FILTER] Kategorie wählen: j/k oder ↑/↓, Enter | [Esc] Abbrechen".to_string(),
         InputMode::MappingSourceSelect => "[MAPPING] Quelle wählen: [a] Auftraggeber/Empfänger | [v] Verwendungszweck | [Esc] Abbrechen".to_string(),
         InputMode::MappingCategorySelect => "[MAPPING] Kategorie wählen: j/k oder ↑/↓, Enter | [n] Neue Kategorie | [Esc] Abbrechen".to_string(),
@@ -1006,7 +1101,7 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
             app.mapping_category, app.input_buffer
         ),
         InputMode::Normal => format!(
-            " [/]Suche: \"{}\" | [i]Min: {} | [a]Max: {} | [s]Start: {} | [e]Ende: {} | [f]Kategorie: {} | [c]Reset | [m]Kategorie Mappen | [r]Report",
+            " [f]Filter-Menü | Suche: \"{}\" | Min: {} | Max: {} | Start: {} | Ende: {} | Kategorie: {} | [m]Mappen | [r]Report",
             app.filter_search, min_str, max_str, start_str, end_str, category_str
         ),
     };
@@ -1032,9 +1127,69 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
         render_category_select_popup(f, app);
     }
 
+    if app.input_mode == InputMode::FilterMenu
+        || filter_menu_edit_index(&app.input_mode).is_some()
+    {
+        render_filter_menu_popup(f, app);
+    }
+
     if app.input_mode == InputMode::FilterCategorySelect {
         render_filter_category_popup(f, app);
     }
+}
+
+fn filter_menu_edit_index(mode: &InputMode) -> Option<usize> {
+    match mode {
+        InputMode::SearchText => Some(0),
+        InputMode::FilterMinAmount => Some(1),
+        InputMode::FilterMaxAmount => Some(2),
+        InputMode::FilterStartDate => Some(3),
+        InputMode::FilterEndDate => Some(4),
+        _ => None,
+    }
+}
+
+fn render_filter_menu_popup(f: &mut ratatui::Frame, app: &mut App) {
+    let area = f.area();
+
+    let popup_width = area.width.saturating_sub(4).clamp(42, 68).min(area.width);
+    let item_count = FILTER_MENU_ITEMS.len();
+    let popup_height = (item_count as u16 + 2)
+        .min(area.height.saturating_sub(2))
+        .max(1);
+
+    let x = area.x + area.width.saturating_sub(popup_width) / 2;
+    let y = area.y + area.height.saturating_sub(popup_height) / 2;
+    let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+    let values = app.filter_menu_values();
+    let edit_index = filter_menu_edit_index(&app.input_mode);
+    let items: Vec<ListItem> = FILTER_MENU_ITEMS
+        .iter()
+        .enumerate()
+        .map(|(index, label)| {
+            let value = if Some(index) == edit_index {
+                format!("{}_", app.input_buffer)
+            } else {
+                values.get(index).cloned().unwrap_or_default()
+            };
+            ListItem::new(format!("{:<24} {}", label, value))
+        })
+        .collect();
+
+    let title = if edit_index.is_some() {
+        " Filter bearbeiten | Enter | Esc "
+    } else {
+        " Filter | j/k Enter | Esc "
+    };
+
+    let list = List::new(items)
+        .block(Block::default().borders(Borders::ALL).title(title))
+        .highlight_style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD))
+        .highlight_symbol("▶ ");
+
+    f.render_widget(Clear, popup_area);
+    f.render_stateful_widget(list, popup_area, &mut app.filter_menu_state);
 }
 
 fn render_filter_category_popup(f: &mut ratatui::Frame, app: &mut App) {
@@ -1379,6 +1534,121 @@ mod tests {
         app.select_filter_category();
         assert_eq!(app.filter_category.as_deref(), Some("Lebensmittel"));
         assert_eq!(app.filtered_transactions.len(), 2);
+    }
+
+    #[test]
+    fn filter_menu_navigation_wraps() {
+        let mut app = test_app();
+        app.start_filter_menu();
+        assert!(app.input_mode == InputMode::FilterMenu);
+        assert_eq!(app.filter_menu_state.selected(), Some(0));
+
+        app.prev_filter_menu_item();
+        assert_eq!(
+            app.filter_menu_state.selected(),
+            Some(FILTER_MENU_ITEMS.len() - 1)
+        );
+
+        app.next_filter_menu_item();
+        assert_eq!(app.filter_menu_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn filter_menu_opens_selected_filter() {
+        let mut app = test_app();
+        let expected = [
+            (0, InputMode::SearchText),
+            (1, InputMode::FilterMinAmount),
+            (2, InputMode::FilterMaxAmount),
+            (3, InputMode::FilterStartDate),
+            (4, InputMode::FilterEndDate),
+            (5, InputMode::FilterCategorySelect),
+        ];
+
+        for (index, mode) in expected {
+            app.start_filter_menu();
+            app.filter_menu_state.select(Some(index));
+            app.select_filter_menu_item();
+            assert!(app.input_mode == mode);
+        }
+    }
+
+    #[test]
+    fn filter_menu_prefills_current_value() {
+        let mut app = test_app();
+        app.filter_search = "rewe".to_string();
+        app.filter_min_amount = Some(20.0);
+
+        app.start_filter_menu();
+        app.filter_menu_state.select(Some(0));
+        app.select_filter_menu_item();
+        assert_eq!(app.input_buffer, "rewe");
+
+        app.start_filter_menu();
+        app.filter_menu_state.select(Some(1));
+        app.select_filter_menu_item();
+        assert_eq!(app.input_buffer, "20");
+    }
+
+    #[test]
+    fn filter_menu_resets_all_filters() {
+        let mut app = test_app();
+        app.filter_search = "rewe".to_string();
+        app.filter_category = Some("Lebensmittel".to_string());
+        app.filter_min_amount = Some(20.0);
+        app.filter_start_date = Some(NaiveDate::from_ymd_opt(2025, 1, 1).unwrap());
+        app.apply_filters();
+        assert_eq!(app.filtered_transactions.len(), 1);
+
+        app.start_filter_menu();
+        app.filter_menu_state.select(Some(6));
+        app.select_filter_menu_item();
+
+        assert!(app.input_mode == InputMode::FilterMenu);
+        assert!(app.filter_search.is_empty());
+        assert_eq!(app.filter_min_amount, None);
+        assert_eq!(app.filter_max_amount, None);
+        assert_eq!(app.filter_start_date, None);
+        assert_eq!(app.filter_end_date, None);
+        assert_eq!(app.filter_category, None);
+        assert_eq!(app.filtered_transactions.len(), 3);
+    }
+
+    #[test]
+    fn filter_menu_shows_current_values() {
+        let mut app = test_app();
+        app.filter_search = "rewe".to_string();
+        app.filter_min_amount = Some(20.0);
+        app.filter_category = Some("Lebensmittel".to_string());
+
+        let values = app.filter_menu_values();
+        assert_eq!(values[0], "\"rewe\"");
+        assert_eq!(values[1], "20.00 €");
+        assert_eq!(values[2], "-");
+        assert_eq!(values[5], "Lebensmittel");
+    }
+
+    #[test]
+    fn filter_menu_edit_targets_selected_row() {
+        assert_eq!(filter_menu_edit_index(&InputMode::SearchText), Some(0));
+        assert_eq!(filter_menu_edit_index(&InputMode::FilterMinAmount), Some(1));
+        assert_eq!(filter_menu_edit_index(&InputMode::FilterMaxAmount), Some(2));
+        assert_eq!(filter_menu_edit_index(&InputMode::FilterStartDate), Some(3));
+        assert_eq!(filter_menu_edit_index(&InputMode::FilterEndDate), Some(4));
+        assert_eq!(filter_menu_edit_index(&InputMode::FilterMenu), None);
+    }
+
+    #[test]
+    fn category_selection_returns_to_filter_menu() {
+        let mut app = test_app();
+        app.start_filter_menu();
+        app.filter_menu_state.select(Some(5));
+        app.select_filter_menu_item();
+        app.filter_category_state.select(Some(1));
+        app.select_filter_category();
+
+        assert!(app.input_mode == InputMode::FilterMenu);
+        assert_eq!(app.filter_category.as_deref(), Some("Lebensmittel"));
     }
 }
 
