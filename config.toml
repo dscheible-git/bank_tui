@@ -10,6 +10,16 @@
 # Directory containing the bank CSV exports.
 csv_dir = "."
 
+# Mobile report. Written next to the CSVs on every start (and after each
+# category mapping) so a folder sync (Nextcloud, Syncthing, ...) makes it
+# available on your phone. Relative paths are resolved against `csv_dir`;
+# set an empty string to disable the report.
+report_path = "report.html"
+
+# Also render a PDF next to the HTML report. Requires Chromium/Chrome.
+# The PDF is generated in the background so the TUI stays responsive.
+report_pdf = false
+
 # Payees to ignore completely during import (case-insensitive substring match).
 ignore_payees = []
 

@@ -71,17 +71,48 @@ Navigate to any directory containing your bank CSV files, then launch the app:
 bank_tui
 ```
 
+### Options
+
+```bash
+bank_tui --report        # write the report and exit (no TUI, e.g. from cron)
+bank_tui --report --pdf  # additionally render a PDF
+bank_tui --no-report     # start the TUI without touching the report
+bank_tui --help
+```
+
+---
+
+## Mobile Report (phone / tablet)
+
+The app writes a self-contained HTML report on every start and after every
+category mapping. Because it lives next to the CSVs, any folder sync
+(Nextcloud, Syncthing, ...) puts it on your phone automatically.
+
+- `report_path` (default `report.html`, relative to `csv_dir`, empty disables it)
+- `report_pdf` (default `false`): additionally renders a PDF via headless
+  Chromium in the background. Nextcloud can preview PDFs inline, which is the
+  quickest way to look at the numbers on a phone.
+
+The HTML report is mobile-first: a 12-month history chart, compact summary
+cards, tap-to-expand category cards and monthly accordions, and a booking
+list with sticky search, category filter chips, sorting and collapsible
+transaction details. Desktop and PDF keep the full tables. It works offline
+and can be added to the home screen. Both files contain only data already
+present in your CSV exports.
+
 ---
 
 ## Keybindings
 
 - `j` / `k` or `Down` / `Up`: Navigate through transaction records
+- `h` / `l`: Scroll tables horizontally; the first column stays pinned in the category tables
 - `Tab` / `Shift+Tab`: Switch tabs (e.g., Transactions, Categories, Analytics)
 - `/`: Open dynamic filter/search
 - `i` / `a`: Filter by minimum / maximum amount
 - `s` / `e`: Filter by start / end date (`DD.MM.YYYY`)
 - `f`: Filter the Buchungsliste by category (choose with `j`/`k`, confirm with `Enter`)
 - `c`: Reset all filters
+- `r`: Regenerate the HTML/PDF report
 - `m`: Map the selected transaction to a category
   - Choose the matching source (`a` = payee, `v` = purpose)
   - Pick an existing category from the list (`j`/`k`, `Enter`) or press `n` to create a new one

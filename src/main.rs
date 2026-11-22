@@ -1,3 +1,5 @@
+mod report;
+
 use chrono::NaiveDate;
 use crossterm::{
     event::{self, Event, KeyCode},
@@ -19,7 +21,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-#[derive(Debug, Deserialize, Serialize, Default, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 struct Config {
     #[serde(default = "default_csv_dir")]
     csv_dir: String,
@@ -27,10 +29,32 @@ struct Config {
     ignore_payees: Vec<String>,
     #[serde(default)]
     categories: BTreeMap<String, Vec<String>>,
+    /// Path of the generated HTML report (relative to `csv_dir`). Empty disables it.
+    #[serde(default = "default_report_path")]
+    report_path: String,
+    /// Additionally render a PDF next to the HTML report (requires Chromium).
+    #[serde(default)]
+    report_pdf: bool,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            csv_dir: default_csv_dir(),
+            ignore_payees: Vec::new(),
+            categories: BTreeMap::new(),
+            report_path: default_report_path(),
+            report_pdf: false,
+        }
+    }
 }
 
 fn default_csv_dir() -> String {
     ".".to_string()
+}
+
+fn default_report_path() -> String {
+    "report.html".to_string()
 }
 
 fn config_path() -> PathBuf {
@@ -316,6 +340,12 @@ struct App {
     mapping_category: String,
     mapping_keyword: String,
     mapping_category_state: ListState,
+
+    // Kurze Statusmeldung (z. B. nach dem Schreiben des Reports)
+    status: Option<String>,
+    last_html: Option<PathBuf>,
+    pdf_rx: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
+    pdf_dirty: bool,
 }
 
 impl App {
@@ -344,6 +374,10 @@ impl App {
             mapping_category: String::new(),
             mapping_keyword: String::new(),
             mapping_category_state: ListState::default(),
+            status: None,
+            last_html: None,
+            pdf_rx: None,
+            pdf_dirty: false,
         };
         if !app.filtered_transactions.is_empty() {
             app.table_state.select(Some(0));
@@ -537,6 +571,81 @@ impl App {
                 tx.category = assign_category(&tx.payee, &tx.text, &tx.purpose, &self.config);
             }
             self.apply_filters();
+            self.refresh_report();
+        }
+    }
+
+    /// Regenerates the report from the currently loaded transactions. The HTML
+    /// is written synchronously (milliseconds), the optional PDF is rendered in
+    /// a background thread so the TUI stays responsive.
+    fn refresh_report(&mut self) {
+        match report::generate_html(&self.config, &self.all_transactions) {
+            Ok(Some(html)) => {
+                let time = chrono::Local::now().format("%H:%M");
+                self.status = Some(format!("Report aktualisiert ({})", time));
+                self.last_html = Some(html);
+                if self.config.report_pdf {
+                    self.start_pdf();
+                }
+            }
+            Ok(None) => {
+                self.last_html = None;
+                self.pdf_dirty = false;
+                self.status = None;
+            }
+            Err(err) => {
+                eprintln!("[report] {}", err);
+                self.status = Some(format!("Report-Fehler: {}", err));
+            }
+        }
+    }
+
+    fn start_pdf(&mut self) {
+        let Some(html) = self.last_html.clone() else {
+            return;
+        };
+        if self.pdf_rx.is_some() {
+            // A render is already running: redo it once it has finished.
+            self.pdf_dirty = true;
+            return;
+        }
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let pdf = html.with_extension("pdf");
+            let _ = tx.send(report::write_pdf(&html, &pdf));
+        });
+        self.pdf_rx = Some(rx);
+        self.status = Some("PDF wird erzeugt …".to_string());
+    }
+
+    fn poll_pdf(&mut self) {
+        use std::sync::mpsc::TryRecvError;
+
+        let Some(rx) = self.pdf_rx.as_ref() else {
+            return;
+        };
+        let result = rx.try_recv();
+        match result {
+            Ok(Ok(())) => {
+                self.pdf_rx = None;
+                let time = chrono::Local::now().format("%H:%M");
+                self.status = Some(format!("PDF erzeugt ({})", time));
+            }
+            Ok(Err(err)) => {
+                eprintln!("[report] {}", err);
+                self.pdf_rx = None;
+                self.status = Some("PDF fehlgeschlagen (Chromium nicht verfügbar?)".to_string());
+            }
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => {
+                self.pdf_rx = None;
+            }
+        }
+
+        if self.pdf_dirty {
+            self.pdf_dirty = false;
+            self.start_pdf();
         }
     }
 
@@ -576,9 +685,88 @@ impl App {
     }
 }
 
+#[derive(Default)]
+struct Args {
+    report_only: bool,
+    pdf: bool,
+    no_report: bool,
+    help: bool,
+}
+
+fn parse_args() -> Result<Args, String> {
+    let mut args = Args::default();
+    for arg in std::env::args().skip(1) {
+        match arg.as_str() {
+            "--report" | "-r" => args.report_only = true,
+            "--pdf" => args.pdf = true,
+            "--no-report" => args.no_report = true,
+            "--help" | "-h" => args.help = true,
+            other => return Err(format!("Unbekannte Option: {other}")),
+        }
+    }
+    Ok(args)
+}
+
+fn print_help() {
+    println!(
+        "bank_tui {}\n\
+         \n\
+         Aufruf: bank_tui [OPTIONEN]\n\
+         \n\
+         Ohne Optionen startet die interaktive TUI. Der HTML-Report wird beim\n\
+         Start und nach jeder Kategorie-Zuordnung automatisch neu geschrieben\n\
+         (siehe report_path in der Konfiguration).\n\
+         \n\
+         Optionen:\n\
+           -r, --report    Report erzeugen und beenden (ohne TUI, z. B. für cron)\n\
+               --pdf       Zusätzlich zum HTML-Report ein PDF erzeugen (Chromium)\n\
+               --no-report TUI starten, aber keinen Report schreiben\n\
+           -h, --help      Diese Hilfe anzeigen\n\
+         \n\
+         Konfiguration: ~/.config/bank_tui/config.toml",
+        env!("CARGO_PKG_VERSION")
+    );
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = load_config();
+    let args = parse_args()?;
+    if args.help {
+        print_help();
+        return Ok(());
+    }
+
+    let mut config = load_config();
+    if args.pdf {
+        config.report_pdf = true;
+    }
+    if args.no_report {
+        config.report_path.clear();
+    }
+
     let transactions = load_transactions_from_folder(&config.csv_dir, &config);
+
+    if args.report_only {
+        match report::generate(&config, &transactions) {
+            Ok(Some(outcome)) => {
+                println!("HTML: {}", outcome.html.display());
+                if let Some(pdf) = outcome.pdf {
+                    println!("PDF:  {}", pdf.display());
+                }
+                if let Some(warning) = outcome.warning {
+                    eprintln!("[report] {}", warning);
+                }
+            }
+            Ok(None) => println!("Report ist deaktiviert (report_path ist leer)."),
+            Err(err) => {
+                eprintln!("[report] {}", err);
+                std::process::exit(1);
+            }
+        }
+        return Ok(());
+    }
+
+    let mut app = App::new(config, transactions);
+    app.refresh_report();
 
     enable_raw_mode()?;
     let mut stdout = std::io::stdout();
@@ -586,11 +774,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut app = App::new(config, transactions);
-
     loop {
+        app.poll_pdf();
         terminal.draw(|f| ui(f, &mut app))?;
 
+        if !event::poll(std::time::Duration::from_millis(200))? {
+            continue;
+        }
         if let Event::Key(key) = event::read()? {
             match app.input_mode {
                 InputMode::MappingSourceSelect => {
@@ -757,6 +947,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             app.filter_category = None;
                             app.apply_filters();
                         }
+                        KeyCode::Char('r') => app.refresh_report(),
                         KeyCode::Char('m')
                             if app.tab_index == 0 && !app.filtered_transactions.is_empty() =>
                         {
@@ -815,9 +1006,14 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
             app.mapping_category, app.input_buffer
         ),
         InputMode::Normal => format!(
-            " [/]Suche: \"{}\" | [i]Min: {} | [a]Max: {} | [s]Start: {} | [e]Ende: {} | [f]Kategorie: {} | [c]Reset | [m]Kategorie Mappen",
+            " [/]Suche: \"{}\" | [i]Min: {} | [a]Max: {} | [s]Start: {} | [e]Ende: {} | [f]Kategorie: {} | [c]Reset | [m]Kategorie Mappen | [r]Report",
             app.filter_search, min_str, max_str, start_str, end_str, category_str
         ),
+    };
+
+    let filter_text = match &app.status {
+        Some(status) => format!("{} | {}", filter_text, status),
+        None => filter_text,
     };
 
     let filter_p = Paragraph::new(filter_text)
@@ -916,6 +1112,18 @@ fn slice_cells<'a>(cells: Vec<Cell<'a>>, offset: usize) -> Vec<Cell<'a>> {
     cells.into_iter().skip(offset).collect()
 }
 
+/// Hält die erste Spalte beim horizontalen Scrollen sichtbar und verschiebt
+/// nur die übrigen Spalten um `offset`.
+fn with_pinned_first<T>(items: impl IntoIterator<Item = T>, offset: usize) -> Vec<T> {
+    let mut items = items.into_iter();
+    let mut visible = Vec::new();
+    if let Some(first) = items.next() {
+        visible.push(first);
+        visible.extend(items.skip(offset));
+    }
+    visible
+}
+
 fn render_list_tab(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
     let all_headers = ["Datum", "Empfänger/Auftraggeber", "Kategorie", "Betrag", "Buchungstext", "Verwendungszweck"];
     let all_constraints = [
@@ -991,8 +1199,8 @@ fn render_monthly_tab(f: &mut ratatui::Frame, app: &App, area: Rect) {
         .map(|h| Cell::from(h).style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)))
         .collect();
 
-    let visible_headers = slice_cells(header_cells, app.scroll_x_tab1);
-    let visible_constraints = slice_constraints(&all_constraints, app.scroll_x_tab1);
+    let visible_headers = with_pinned_first(header_cells, app.scroll_x_tab1);
+    let visible_constraints = with_pinned_first(all_constraints, app.scroll_x_tab1);
 
     let header = Row::new(visible_headers).height(1);
 
@@ -1009,12 +1217,12 @@ fn render_monthly_tab(f: &mut ratatui::Frame, app: &App, area: Rect) {
         }
 
         row_cells.push(Cell::from(format!("-{:.2} €", month_total as f64 / 100.0).replace('.', ",")).style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)));
-        rows.push(Row::new(slice_cells(row_cells, app.scroll_x_tab1)));
+        rows.push(Row::new(with_pinned_first(row_cells, app.scroll_x_tab1)));
     }
 
     let table = Table::new(rows, visible_constraints)
         .header(header)
-        .block(Block::default().borders(Borders::ALL).title(" Ausgaben pro Monat & Kategorie | Vertikal: j/k, Horizontal: h/l "));
+        .block(Block::default().borders(Borders::ALL).title(" Ausgaben pro Monat & Kategorie | Vertikal: j/k, Horizontal: h/l, 1. Spalte fix "));
 
     f.render_widget(table, area);
 }
@@ -1058,8 +1266,8 @@ fn render_annual_avg_tab(f: &mut ratatui::Frame, app: &App, area: Rect) {
         .map(|h| Cell::from(h).style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)))
         .collect();
 
-    let visible_headers = slice_cells(header_cells, app.scroll_x_tab2);
-    let visible_constraints = slice_constraints(&all_constraints, app.scroll_x_tab2);
+    let visible_headers = with_pinned_first(header_cells, app.scroll_x_tab2);
+    let visible_constraints = with_pinned_first(all_constraints, app.scroll_x_tab2);
 
     let header = Row::new(visible_headers).height(1);
 
@@ -1084,7 +1292,7 @@ fn render_annual_avg_tab(f: &mut ratatui::Frame, app: &App, area: Rect) {
         row_cells.push(Cell::from(format!("-{:.2} €", cat_total as f64 / 100.0).replace('.', ",")).style(Style::default().fg(Color::Red)));
         row_cells.push(Cell::from(format!("-{:.2} €", avg_monthly).replace('.', ",")).style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
 
-        rows.push(Row::new(slice_cells(row_cells, app.scroll_x_tab2)));
+        rows.push(Row::new(with_pinned_first(row_cells, app.scroll_x_tab2)));
     }
 
     let mut total_cells = vec![Cell::from("GESAMT").style(Style::default().add_modifier(Modifier::BOLD))];
@@ -1096,11 +1304,11 @@ fn render_annual_avg_tab(f: &mut ratatui::Frame, app: &App, area: Rect) {
     total_cells.push(Cell::from(format!("-{:.2} €", grand_total as f64 / 100.0).replace('.', ",")).style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)));
     total_cells.push(Cell::from(format!("-{:.2} €", total_avg_monthly).replace('.', ",")).style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
     
-    rows.push(Row::new(slice_cells(total_cells, app.scroll_x_tab2)).style(Style::default().bg(Color::Rgb(30, 30, 30))));
+    rows.push(Row::new(with_pinned_first(total_cells, app.scroll_x_tab2)).style(Style::default().bg(Color::Rgb(30, 30, 30))));
 
     let table = Table::new(rows, visible_constraints)
         .header(header)
-        .block(Block::default().borders(Borders::ALL).title(" Ausgaben pro Jahr & Mtl. Durchschnitt pro Kategorie | Vertikal: j/k, Horizontal: h/l "));
+        .block(Block::default().borders(Borders::ALL).title(" Ausgaben pro Jahr & Mtl. Durchschnitt pro Kategorie | Vertikal: j/k, Horizontal: h/l, 1. Spalte fix "));
 
     f.render_widget(table, area);
 }
@@ -1171,5 +1379,52 @@ mod tests {
         app.select_filter_category();
         assert_eq!(app.filter_category.as_deref(), Some("Lebensmittel"));
         assert_eq!(app.filtered_transactions.len(), 2);
+mod table_tests {
+    use super::with_pinned_first;
+
+    #[test]
+    fn pinned_first_column_survives_horizontal_scroll() {
+        let columns = vec!["Kategorie", "2024", "2025", "2026"];
+        assert_eq!(with_pinned_first(columns.clone(), 0), columns);
+        assert_eq!(
+            with_pinned_first(columns.clone(), 1),
+            vec!["Kategorie", "2025", "2026"]
+        );
+        assert_eq!(with_pinned_first(columns, 99), vec!["Kategorie"]);
+    }
+}
+
+#[cfg(test)]
+mod config_tests {
+    use super::*;
+
+    #[test]
+    fn default_config_enables_report_next_to_csvs() {
+        let config = Config::default();
+        assert_eq!(config.report_path, "report.html");
+        assert!(!config.report_pdf);
+    }
+
+    #[test]
+    fn config_roundtrip_keeps_report_settings() {
+        let config = Config {
+            csv_dir: "/data".to_string(),
+            ignore_payees: vec!["Umbuchung".to_string()],
+            categories: BTreeMap::from([(
+                "Lebensmittel".to_string(),
+                vec!["rewe".to_string()],
+            )]),
+            report_path: "report.html".to_string(),
+            report_pdf: true,
+        };
+
+        let serialized = toml::to_string_pretty(&config).unwrap();
+        let parsed: Config = toml::from_str(&serialized).unwrap();
+
+        assert_eq!(parsed.report_path, "report.html");
+        assert!(parsed.report_pdf);
+        assert_eq!(parsed.categories["Lebensmittel"], vec!["rewe"]);
+        // TOML requires plain keys before tables, otherwise parsing breaks.
+        assert!(serialized.find("report_path").unwrap() < serialized.find("[categories]").unwrap());
     }
 }
