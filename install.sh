@@ -21,7 +21,33 @@ cd "$(dirname "$0")"
 echo "[+] Kompiliere das Rust TUI-Projekt (cargo build --release)..."
 cargo build --release
 
+# 4. Binary nach ~/.local/bin installieren, falls verfügbar
+BIN_DIR="$HOME/.local/bin"
+BINARY="target/release/bank_tui"
+
+if [ -d "$BIN_DIR" ] && [ -w "$BIN_DIR" ]; then
+    cp "$BINARY" "$BIN_DIR/bank_tui"
+    chmod +x "$BIN_DIR/bank_tui"
+    echo "[+] Binary installiert unter: $BIN_DIR/bank_tui"
+    INSTALLED=1
+
+    case ":$PATH:" in
+        *":$BIN_DIR:"*) ;;
+        *)
+            echo "[!] Hinweis: $BIN_DIR ist nicht in PATH."
+            echo "    Fügen Sie es zu PATH hinzu, um 'bank_tui' direkt auszuführen."
+            ;;
+    esac
+else
+    echo "[i] $BIN_DIR ist nicht verfügbar; das Binary bleibt unter $PWD/$BINARY."
+    INSTALLED=0
+fi
+
 echo ""
 echo "=== Installation erfolgreich abgeschlossen! ==="
 echo "Sie können die Anwendung starten mit:"
-echo "  cargo run --release"
+if [ "$INSTALLED" -eq 1 ]; then
+    echo "  bank_tui"
+else
+    echo "  cargo run --release"
+fi
